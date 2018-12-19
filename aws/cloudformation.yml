@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  AccountId:
+    Type: String
+
+  LambdaName:
+    Type: String
+    Default: hello-world-lambda
+
+  RepoName:
+    Type: String
+
+  RoleName:
+    Type: String
+    Default: lambda-execution-role
+
+Resources:
+  Repository:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: !Ref RepoName
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+              - lambda.amazonaws.com
+        Version: 2012-10-17
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSLambdaExecute
+      Path: /
+
+  HelloWorldLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaName
+      Runtime: nodejs8.10
+      Code:
+        ZipFile:
+          "exports.handler = async (event, context) => 'hello world!';"
+      Handler: index.handler
+      MemorySize: 128
+      Timeout: 10
+      Role: !GetAtt LambdaExecutionRole.Arn
+
+# aws api gateway - create rest api
+  HelloWorldRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: A Hello World Rest API
+      FailOnWarnings: true
+      Name: Hello world API
+
+# aws api gateway - create resource
+  HelloWorldApiResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt HelloWorldRestApi.RootResourceId
+      PathPart: hello-world
+      RestApiId: !Ref HelloWorldRestApi
+
+# aws api gateway - put method
+  HelloWorldRequest:
+    DependsOn: HelloWorldLambdaPermission
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        IntegrationHttpMethod: GET
+        Type: AWS
+        Uri: !Join
+          - ''
+          - - 'arn:aws:apigateway:us-east-1:lambda:path/2015-03-31/functions/'
+            - !GetAtt HelloWorldLambda.Arn
+            - '/invocations'
+      ResourceId: !Ref HelloWorldApiResource
+      RestApiId: !Ref HelloWorldRestApi
+
+
+# logging
+  ApiGatewayCloudwatchLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Action:
+            - sts:AssumeRole
+            Effect: Allow
+            Principal:
+              Service:
+              - apigateway.amazonaws.com
+        Version: 2012-10-17
+      Policies:
+        - PolicyName: ApiGatewayLogsPolicy
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:DescribeLogGroups
+                - logs:DescribeLogStreams
+                - logs:PutLogEvents
+                - logs:GetLogEvents
+                - logs:FilterLogEvents
+                Effect: Allow
+                Resource: '*'
+
+# creat an account
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
+    Properties:
+      CloudWatchRoleArn: !GetAtt ApiGatewayCloudwatchLogsRole.Arn
+
+# aws api gateway - put integration - This is the method Amazon API Gateway invokes when you make an HTTP request for the POST method endpoint
+  HelloWorldStage:
+    DependsOn: ApiGatewayAccount
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref HelloWorldDeployment
+      MethodSettings:
+        - DataTraceEnabled: true
+          HttpMethod: '*'
+          LoggingLevel: INFO
+          ResourcePath: /*
+      RestApiId: !Ref HelloWorldRestApi
+      StageName: LATEST
+
+# aws api gateway - create deployment
+  HelloWorldDeployment:
+    DependsOn: HelloWorldRequest
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref HelloWorldRestApi
+      StageName: TEST
+
+# aws lambda - add permission
+  HelloWorldLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:invokeFunction
+      FunctionName: !GetAtt HelloWorldLambda.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join
+        - ''
+        - - 'arn:aws:execute-api:us-east-1:'
+          - !Ref AccountId
+          - ':'
+          - !Ref HelloWorldRestApi
+          - '/*'
+
+Outputs:
+  RepoSSH:
+    Value: !GetAtt Repository.CloneUrlSsh
+  
+  RepoHTTP:
+    Value: !GetAtt Repository.CloneUrlHttp
